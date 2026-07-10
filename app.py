@@ -21,10 +21,15 @@ from src.utils import area_bucket, square_meter_to_pyeong, to_number
 MOLIT_URL = "https://rt.molit.go.kr/pt/xls/xls.do?&mobileAt="
 
 TARGET_OPTIONS = {
-    "연립/다세대/다가구만 분석": ("연립", "다세대", "다가구"),
-    "엑셀 전체 분석": (),
-    "연립/다세대만 분석": ("연립", "다세대"),
-    "다가구만 분석": ("다가구",),
+    "전체 (필터 없음)": (),
+    "아파트": ("아파트",),
+    "연립/다세대": ("연립", "다세대"),
+    "단독/다가구": ("단독", "다가구"),
+    "오피스텔": ("오피스텔",),
+    "분양/입주권": ("분양", "입주권"),
+    "상업/업무용": ("상가", "상업", "업무"),
+    "토지": ("토지",),
+    "공장/창고 등": ("공장", "창고"),
 }
 
 st.set_page_config(
@@ -361,7 +366,7 @@ with left:
     rent_files = st.file_uploader("전월세 실거래가 엑셀 — 전세가율·수익률 분석에 사용", type=["xlsx", "xls"], accept_multiple_files=True, key="rent")
 
     st.header("④ 분석 설정")
-    target_label = st.selectbox("물건 종류 필터", options=list(TARGET_OPTIONS.keys()), index=0)
+    target_label = st.selectbox("물건 종류 (국토부 탭과 동일)", options=list(TARGET_OPTIONS.keys()), index=2, help="엑셀에 물건 종류 정보가 없으면 [전체]를 선택하세요.")
     target_keywords = TARGET_OPTIONS[target_label]
     with st.expander("세부 필터 (선택사항)", expanded=False):
         dong_keyword = st.text_input("특정 법정동만 보기", placeholder="예: 주안동")
@@ -397,7 +402,7 @@ with right:
             dong = dong_keyword.strip() or None
             cleaned = clean_transactions(raw_sale, include_keywords=target_keywords, dong=dong)
             if cleaned.empty:
-                st.warning("조건에 맞는 매매 데이터가 없습니다. 필터를 '엑셀 전체 분석'으로 바꿔보세요.")
+                st.warning("조건에 맞는 매매 데이터가 없습니다. 물건 종류를 [전체 (필터 없음)]으로 바꿔 다시 시도해 보세요.")
                 st.stop()
 
             rent_cleaned = pd.DataFrame()
