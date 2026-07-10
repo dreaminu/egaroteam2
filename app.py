@@ -126,6 +126,45 @@ def load_uploaded_excels(uploaded_files) -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True)
 
 
+def _files_key(uploaded_files) -> tuple:
+    return tuple((f.name, f.getvalue()) for f in uploaded_files)
+
+
+@st.cache_data(show_spinner=False, max_entries=8)
+def parse_excels_cached(files: tuple) -> pd.DataFrame:
+    frames: list[pd.DataFrame] = []
+    for name, data in files:
+        suffix = Path(name).suffix or ".xlsx"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            tmp.write(data)
+            tmp_path = Path(tmp.name)
+        try:
+            df = read_excel_file(tmp_path)
+            df["업로드파일명"] = name
+            frames.append(df)
+        finally:
+            tmp_path.unlink(missing_ok=True)
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True)
+
+
+@st.cache_data(show_spinner=False, max_entries=8)
+def clean_sales_cached(files: tuple, keywords: tuple, dong: str | None) -> pd.DataFrame:
+    raw = parse_excels_cached(files)
+    if raw.empty:
+        return raw
+    return clean_transactions(raw, include_keywords=keywords, dong=dong)
+
+
+@st.cache_data(show_spinner=False, max_entries=8)
+def clean_rent_cached(files: tuple, dong: str | None) -> pd.DataFrame:
+    raw = parse_excels_cached(files)
+    if raw.empty:
+        return pd.DataFrame()
+    return clean_rent(raw, dong=dong)
+
+
 # ---------------------------------------------------------------- 전월세 데이터 처리
 
 RENT_DEPOSIT_KEYS = ("보증금",)
@@ -190,12 +229,12 @@ def jeonse_ratio_table(sale: pd.DataFrame, rent: pd.DataFrame) -> pd.DataFrame:
 
     def risk(v):
         if v >= 90:
-            return "⚠️ 깡통 위험"
+            return "갭 최소 · ⚠️ 역전세 위험"
         if v >= 80:
-            return "주의"
+            return "갭 작음 · 역전세 주의"
         if v >= 70:
-            return "갭 작음"
-        return "갭 큼"
+            return "갭 보통"
+        return "갭 큼 · 자본 부담"
 
     merged["판정"] = merged["전세가율_%"].apply(risk)
     for c in ["평균매매가_만원", "평균전세보증금_만원"]:
@@ -386,32 +425,25 @@ with right:
 
     try:
         with st.spinner("데이터를 정리하고 분석하는 중입니다..."):
-            if sample_clicked and not analyze_clicked:
-                raw_sale = make_sample_sales()
-                raw_rent = make_sample_rent()
-                report_title = title_hint.strip() or "인천 미추홀구 2025년 샘플"
-                st.caption("샘플 데이터 미리보기 모드입니다. 실제 분석은 엑셀 업로드 후 실행하세요.")
-            else:
-                raw_sale = load_uploaded_excels(sale_files)
-                raw_rent = load_uploaded_excels(rent_files) if rent_files else pd.DataFrame()
-                report_title = title_hint.strip() or "빌라 실거래 분석 리포트 V2"
-            if raw_sale.empty:
-                st.warning("매매 엑셀에서 데이터를 읽지 못했습니다.")
-                st.stop()
-
             dong = dong_keyword.strip() or None
-            cleaned = clean_transactions(raw_sale, include_keywords=target_keywords, dong=dong)
-            if cleaned.empty:
-                st.warning("조건에 맞는 매매 데이터가 없습니다. 물건 종류를 [전체 (필터 없음)]으로 바꿔 다시 시도해 보세요.")
-                st.stop()
-
             rent_cleaned = pd.DataFrame()
             rent_error = None
-            if not raw_rent.empty:
-                try:
-                    rent_cleaned = clean_rent(raw_rent, include_keywords=(), dong=dong)
-                except ValueError as ve:
-                    rent_error = str(ve)
+            if sample_clicked and not analyze_clicked:
+                report_title = title_hint.strip() or "인천 미추홀구 2025년 샘플"
+                st.caption("샘플 데이터 미리보기 모드입니다. 실제 분석은 엑셀 업로드 후 실행하세요.")
+                cleaned = clean_transactions(make_sample_sales(), include_keywords=target_keywords, dong=dong)
+                rent_cleaned = clean_rent(make_sample_rent(), dong=dong)
+            else:
+                report_title = title_hint.strip() or "빌라 실거래 분석 리포트 V2"
+                cleaned = clean_sales_cached(_files_key(sale_files), tuple(target_keywords), dong)
+                if rent_files:
+                    try:
+                        rent_cleaned = clean_rent_cached(_files_key(rent_files), dong)
+                    except ValueError as ve:
+                        rent_error = str(ve)
+            if cleaned.empty:
+                st.warning("매매 데이터가 비어 있거나 조건에 맞는 거래가 없습니다. 물건 종류를 [전체 (필터 없음)]으로 바꿔 다시 시도해 보세요.")
+                st.stop()
 
             analysis = analyze_transactions(cleaned)
             jeonse = jeonse_ratio_table(cleaned, rent_cleaned) if not rent_cleaned.empty else pd.DataFrame()
@@ -459,7 +491,7 @@ with right:
             render_dataframe_section("도로명 + 연식별 분석", analysis["road_build_year"], 50)
 
         with tab3:
-            st.caption("전세가율 = 평균 전세보증금 ÷ 평균 매매가. 90% 이상은 깡통전세 위험, 70% 안팎은 갭이 작은 구간입니다.")
+            st.caption("전세가율 = 평균 전세보증금 ÷ 평균 매매가. 투자자 관점: 전세가율이 높을수록 갭(갭_만원 = 필요 자기자본)이 적게 듭니다. 다만 90% 이상은 전세가 하락 시 보증금 반환 부담(역전세)이 크고, 보증보험 가입 거절로 다음 세입자를 구하기 어려울 수 있습니다.")
             if rent_error:
                 st.error(rent_error)
             elif jeonse.empty:
@@ -467,7 +499,7 @@ with right:
             else:
                 high = jeonse[jeonse["전세가율_%"] >= 90]
                 if not high.empty:
-                    st.warning(f"전세가율 90% 이상 조합이 {len(high)}개 있습니다. 역전세·깡통 위험을 확인하세요.")
+                    st.warning(f"전세가율 90% 이상 조합 {len(high)}개 — 갭은 최소지만 전세가 하락 시 보증금 반환 위험이 가장 큰 구간입니다.")
                 render_dataframe_section("동네 × 평수대별 전세가율", jeonse, 50)
 
         with tab4:
