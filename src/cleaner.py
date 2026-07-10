@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Iterable
 
 import pandas as pd
@@ -40,6 +41,10 @@ COLUMN_ALIASES = {
     "층": ["층", "해당층"],
 }
 
+PYEONG_DIVISOR = 3.305785
+AREA_BUCKET_EDGES = [float("-inf"), 10, 12, 14, 16, 18, 20, 24, 30, float("inf")]
+AREA_BUCKET_LABELS = ["10평 이하", "10~12평", "12~14평", "14~16평", "16~18평", "18~20평", "20~24평", "24~30평", "30평 이상"]
+
 
 def normalize_column_name(name: object) -> str:
     text = str(name).strip()
@@ -63,16 +68,44 @@ def standardize_columns(df: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
+def numeric_series(series: pd.Series) -> pd.Series:
+    """to_number의 벡터화 버전: 쉼표 제거 후 숫자로 변환."""
+    return pd.to_numeric(
+        series.astype(str).str.strip().str.replace(",", "", regex=False),
+        errors="coerce",
+    )
+
+
 def infer_housing_type(row: pd.Series) -> str:
     explicit = str(row.get("주택유형", "")).strip()
     if explicit:
         return explicit
-
     joined = " ".join(str(v) for v in row.dropna().tolist())
     for keyword in KNOWN_TYPE_KEYWORDS:
         if keyword in joined:
             return keyword
     return "미상"
+
+
+def infer_housing_type_vector(df: pd.DataFrame) -> pd.Series:
+    """행별 apply 대신 벡터 연산으로 주택유형을 추론한다."""
+    if "주택유형" in df.columns:
+        types = df["주택유형"].fillna("").astype(str).str.strip()
+        types = types.replace({"nan": "", "None": ""})
+    else:
+        types = pd.Series("", index=df.index, dtype=object)
+
+    missing = types == ""
+    if missing.any():
+        sub = df.loc[missing]
+        joined = sub.fillna("").astype(str).agg(" ".join, axis=1)
+        inferred = pd.Series("미상", index=sub.index, dtype=object)
+        for keyword in KNOWN_TYPE_KEYWORDS:
+            hit = inferred.eq("미상") & joined.str.contains(keyword, regex=False)
+            if hit.any():
+                inferred.loc[hit] = keyword
+        types.loc[missing] = inferred
+    return types
 
 
 def contains_any_keyword(value: object, keywords: Iterable[str]) -> bool:
@@ -97,7 +130,6 @@ def filter_by_region(
 
 
 def split_sigungu_and_dong(address: object) -> tuple[str, str]:
-    """Split MOLIT full address like '인천광역시 남동구 장수동'."""
     parts = str(address).strip().split()
     if len(parts) >= 3:
         return " ".join(parts[:-1]), parts[-1]
@@ -110,9 +142,13 @@ def split_sigungu_and_dong(address: object) -> tuple[str, str]:
 def ensure_location_columns(df: pd.DataFrame) -> pd.DataFrame:
     result = df.copy()
     if "시군구" in result.columns and "법정동" not in result.columns:
-        split = result["시군구"].apply(split_sigungu_and_dong)
-        result["법정동"] = split.apply(lambda value: value[1])
-        result["시군구"] = split.apply(lambda value: value[0])
+        addresses = result["시군구"].astype(str).str.strip()
+        parts = addresses.str.split()
+        n = parts.str.len().fillna(0)
+        dong = parts.str[-1].where(n >= 2, addresses)
+        sigungu = parts.str[:-1].str.join(" ").where(n >= 2, addresses)
+        result["법정동"] = dong
+        result["시군구"] = sigungu
     return result
 
 
@@ -135,6 +171,15 @@ def make_trade_date(row: pd.Series) -> pd.Timestamp | pd.NaT:
     return pd.to_datetime(f"{ym_text}{int(day_num):02d}", format="%Y%m%d", errors="coerce")
 
 
+def make_trade_date_vector(df: pd.DataFrame) -> pd.Series:
+    ym = numeric_series(df["계약년월"])
+    day = numeric_series(df["계약일"])
+    valid = ym.notna() & day.notna() & ym.between(100000, 999999)
+    date_int = (ym * 100 + day).where(valid)
+    text = date_int.astype("Int64").astype(str)
+    return pd.to_datetime(text, format="%Y%m%d", errors="coerce")
+
+
 def clean_transactions(
     df: pd.DataFrame,
     include_keywords: Iterable[str] | None = None,
@@ -150,31 +195,32 @@ def clean_transactions(
     required = ["시군구", "법정동", "전용면적(㎡)", "거래금액(만원)"]
     require_columns(cleaned, required)
 
-    cleaned["주택유형"] = cleaned.apply(infer_housing_type, axis=1)
-    cleaned["주택유형"] = cleaned["주택유형"].astype(str).str.strip()
+    cleaned["주택유형"] = infer_housing_type_vector(cleaned).astype(str).str.strip()
 
     keywords = tuple(include_keywords or DEFAULT_TARGET_TYPES)
     if keywords:
-        mask = cleaned["주택유형"].apply(lambda value: contains_any_keyword(value, keywords))
+        pattern = "|".join(re.escape(k) for k in keywords)
+        mask = cleaned["주택유형"].astype(str).str.contains(pattern, regex=True, na=False)
         cleaned = cleaned[mask].copy()
 
     cleaned["시군구"] = cleaned["시군구"].astype(str).str.strip()
     cleaned["법정동"] = cleaned["법정동"].astype(str).str.strip()
     cleaned = filter_by_region(cleaned, sido=sido, sigungu=sigungu, dong=dong)
 
-    cleaned["전용면적_㎡"] = cleaned["전용면적(㎡)"].apply(to_number)
-    cleaned["전용면적_평"] = cleaned["전용면적_㎡"].apply(square_meter_to_pyeong).round(2)
-    cleaned["면적구간"] = cleaned["전용면적_평"].apply(area_bucket)
-    cleaned["거래금액_만원"] = cleaned["거래금액(만원)"].apply(to_number).round(0).astype("Int64")
+    cleaned["전용면적_㎡"] = numeric_series(cleaned["전용면적(㎡)"])
+    cleaned["전용면적_평"] = (cleaned["전용면적_㎡"] / PYEONG_DIVISOR).round(2)
+    buckets = pd.cut(cleaned["전용면적_평"], bins=AREA_BUCKET_EDGES, labels=AREA_BUCKET_LABELS, right=True)
+    cleaned["면적구간"] = buckets.astype(object).where(buckets.notna(), "미상")
+    cleaned["거래금액_만원"] = numeric_series(cleaned["거래금액(만원)"]).round(0).astype("Int64")
     cleaned["평당가_만원"] = (cleaned["거래금액_만원"] / cleaned["전용면적_평"]).round(0).astype("Int64")
 
     if "계약년월" in cleaned.columns and "계약일" in cleaned.columns:
-        cleaned["거래일"] = cleaned.apply(make_trade_date, axis=1)
+        cleaned["거래일"] = make_trade_date_vector(cleaned)
     else:
         cleaned["거래일"] = pd.NaT
 
     if "건축년도" in cleaned.columns:
-        cleaned["건축년도"] = cleaned["건축년도"].apply(to_number).round(0).astype("Int64")
+        cleaned["건축년도"] = numeric_series(cleaned["건축년도"]).round(0).astype("Int64")
     else:
         cleaned["건축년도"] = pd.NA
 
@@ -189,7 +235,7 @@ def clean_transactions(
     cleaned.loc[cleaned["단지명"].isin(["", "nan", "None"]), "단지명"] = "미상"
 
     if "층" in cleaned.columns:
-        cleaned["층"] = cleaned["층"].apply(to_number).round(0).astype("Int64")
+        cleaned["층"] = numeric_series(cleaned["층"]).round(0).astype("Int64")
     else:
         cleaned["층"] = pd.NA
 
