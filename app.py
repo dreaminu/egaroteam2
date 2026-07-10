@@ -183,30 +183,39 @@ def clean_rent(df: pd.DataFrame, include_keywords=(), dong: str | None = None) -
     work = standardize_columns(df)
     work = ensure_location_columns(work)
 
-    deposit_col = next((c for c in work.columns if any(k in _normalize(c) for k in RENT_DEPOSIT_KEYS)), None)
-    monthly_col = next((c for c in work.columns if any(k in _normalize(c) for k in RENT_MONTHLY_KEYS)), None)
+    # 컬럼 탐지: "전월세구분" 같은 구분 컬럼이 "월세금(만원)"보다 먼저 잡히지 않도록 제외
+    deposit_col = next((c for c in work.columns if "보증금" in _normalize(c) and "구분" not in _normalize(c)), None)
+    monthly_col = next(
+        (c for c in work.columns
+         if "월세" in _normalize(c) and "구분" not in _normalize(c) and "보증금" not in _normalize(c)),
+        None,
+    )
+    gubun_col = next((c for c in work.columns if "전월세구분" in _normalize(c)), None)
     if deposit_col is None or "법정동" not in work.columns or "전용면적(㎡)" not in work.columns:
         raise ValueError("전월세 엑셀에서 보증금/법정동/전용면적 컬럼을 찾지 못했습니다. 국토부 전월세 파일인지 확인해 주세요.")
 
-    work["보증금_만원"] = work[deposit_col].apply(to_number)
-    work["월세_만원"] = work[monthly_col].apply(to_number) if monthly_col is not None else 0
-    work["월세_만원"] = pd.to_numeric(work["월세_만원"], errors="coerce").fillna(0)
-    work = work[work["보증금_만원"].notna()].copy()
+    def _num(series):
+        return pd.to_numeric(series.astype(str).str.strip().str.replace(",", "", regex=False), errors="coerce")
 
-    if include_keywords:
-        type_col = "주택유형" if "주택유형" in work.columns else None
-        if type_col:
-            mask = work[type_col].astype(str).apply(lambda v: any(k in v for k in include_keywords))
-            if mask.any():
-                work = work[mask].copy()
+    work["보증금_만원"] = _num(work[deposit_col])
+    if monthly_col is not None:
+        work["월세_만원"] = _num(work[monthly_col]).fillna(0)
+    else:
+        work["월세_만원"] = 0.0
+    work = work[work["보증금_만원"].notna()].copy()
 
     if dong:
         work = work[work["법정동"].astype(str).str.contains(dong, na=False)].copy()
 
     work["법정동"] = work["법정동"].astype(str).str.strip()
-    work["전용면적_평"] = work["전용면적(㎡)"].apply(to_number).apply(square_meter_to_pyeong).round(2)
+    work["전용면적_평"] = (_num(work["전용면적(㎡)"]) / 3.305785).round(2)
     work["면적구간"] = work["전용면적_평"].apply(area_bucket)
-    work["임대구분"] = work["월세_만원"].apply(lambda v: "전세" if v == 0 else "월세")
+
+    if gubun_col is not None:
+        # 국토부 구분값(전세/월세/준월세 등) 우선 사용
+        work["임대구분"] = work[gubun_col].astype(str).str.contains("월세").map({True: "월세", False: "전세"})
+    else:
+        work["임대구분"] = (work["월세_만원"] > 0).map({True: "월세", False: "전세"})
     return work.reset_index(drop=True)
 
 
