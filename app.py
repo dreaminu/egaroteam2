@@ -437,15 +437,17 @@ with right:
             )
 
         summary = analysis["summary"]
-        m1, m2, m3, m4 = st.columns(4)
+        m1, m2, m3, m4, m5, m6 = st.columns(6)
         m1.metric("총 매매건수", f"{summary['total_transactions']:,}건")
-        m2.metric("평균 평당가", f"{summary.get('avg_unit_price_manwon') or 0:,}만원")
-        m3.metric("전월세 데이터", f"{len(rent_cleaned):,}건" if not rent_cleaned.empty else "없음")
-        m4.metric("최근 거래일", summary.get("latest_trade_date") or "미상")
+        m2.metric("법정동 수", f"{summary['dong_count']:,}개")
+        m3.metric("도로명 수", f"{summary.get('road_count', 0):,}개")
+        m4.metric("평균 평당가", f"{summary.get('avg_unit_price_manwon') or 0:,}만원")
+        m5.metric("전월세 데이터", f"{len(rent_cleaned):,}건" if not rent_cleaned.empty else "없음")
+        m6.metric("최근 거래일", summary.get("latest_trade_date") or "미상")
 
         st.divider()
-        tab1, tab2, tab3, tab4, tab5 = st.tabs(
-            ["🏘️ 핵심 분석", "🔑 전세가율", "💰 임대수익률", "🔻 저평가 비교", "📅 거래 추세"]
+        tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(
+            ["🏘️ 핵심 분석", "🛣️ 도로명 TOP", "🔑 전세가율", "💰 임대수익률", "🔻 저평가 비교", "📅 거래 추세", "📄 정리 데이터"]
         )
 
         with tab1:
@@ -453,6 +455,10 @@ with right:
             render_dataframe_section("추가조사 후보", analysis["follow_up_candidates"], 20)
 
         with tab2:
+            render_dataframe_section("도로명별 거래량 TOP 50", analysis["road_volume"], 50)
+            render_dataframe_section("도로명 + 연식별 분석", analysis["road_build_year"], 50)
+
+        with tab3:
             st.caption("전세가율 = 평균 전세보증금 ÷ 평균 매매가. 90% 이상은 깡통전세 위험, 70% 안팎은 갭이 작은 구간입니다.")
             if rent_error:
                 st.error(rent_error)
@@ -464,7 +470,7 @@ with right:
                     st.warning(f"전세가율 90% 이상 조합이 {len(high)}개 있습니다. 역전세·깡통 위험을 확인하세요.")
                 render_dataframe_section("동네 × 평수대별 전세가율", jeonse, 50)
 
-        with tab3:
+        with tab4:
             st.caption("표면수익률 = 연간 월세 ÷ 매매가, 보증금감안수익률 = 연간 월세 ÷ (매매가 − 보증금). 공실·수리비·세금 미반영.")
             if rent_error:
                 st.error(rent_error)
@@ -473,7 +479,7 @@ with right:
             else:
                 render_dataframe_section("동네 × 평수대별 임대수익률", yields, 50)
 
-        with tab4:
+        with tab5:
             st.caption("같은 연식·평수대 그룹 안에서 전체 중앙값보다 평당가가 낮은 동네입니다. 싼 데는 이유가 있을 수 있으니 현장 확인이 필수입니다.")
             if undervalued.empty:
                 st.info("비교할 수 있는 동네 조합이 부족합니다. (같은 연식·평수대에 동네 2곳 이상, 각 3건 이상 필요)")
@@ -483,7 +489,7 @@ with right:
                     st.success(f"그룹 중앙값보다 10% 이상 낮게 거래된 조합이 {len(cheap)}개 있습니다.")
                 render_dataframe_section("연식·평수대 그룹 내 평당가 편차 (낮은 순)", undervalued, 50)
 
-        with tab5:
+        with tab6:
             if trend.empty:
                 st.info("계약년월 정보가 없어 추세를 계산할 수 없습니다.")
             else:
@@ -492,6 +498,9 @@ with right:
                 st.subheader("월별 평균 평당가 (만원)")
                 st.line_chart(trend.set_index("월")["평균평당가_만원"])
                 render_dataframe_section("동네별 거래 모멘텀 (최근 3개월 vs 직전 3개월)", momentum, 50)
+
+        with tab7:
+            render_dataframe_section("분석에 사용된 정리 데이터", cleaned, 300)
 
         # ---- 다운로드
         with tempfile.TemporaryDirectory(prefix="realestate-v2-") as tmpdir:
