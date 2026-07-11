@@ -130,7 +130,6 @@ def _files_key(uploaded_files) -> tuple:
     return tuple((f.name, f.getvalue()) for f in uploaded_files)
 
 
-@st.cache_data(show_spinner=False, max_entries=8)
 def parse_excels_cached(files: tuple) -> pd.DataFrame:
     frames: list[pd.DataFrame] = []
     for name, data in files:
@@ -149,7 +148,6 @@ def parse_excels_cached(files: tuple) -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True)
 
 
-@st.cache_data(show_spinner=False, max_entries=8)
 def clean_sales_cached(files: tuple, keywords: tuple, dong: str | None) -> pd.DataFrame:
     raw = parse_excels_cached(files)
     if raw.empty:
@@ -157,7 +155,6 @@ def clean_sales_cached(files: tuple, keywords: tuple, dong: str | None) -> pd.Da
     return clean_transactions(raw, include_keywords=keywords, dong=dong)
 
 
-@st.cache_data(show_spinner=False, max_entries=8)
 def clean_rent_cached(files: tuple, dong: str | None) -> pd.DataFrame:
     raw = parse_excels_cached(files)
     if raw.empty:
