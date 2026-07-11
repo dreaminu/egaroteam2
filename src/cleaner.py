@@ -197,7 +197,7 @@ def clean_transactions(
 
     cleaned["주택유형"] = infer_housing_type_vector(cleaned).astype(str).str.strip()
 
-    keywords = tuple(include_keywords or DEFAULT_TARGET_TYPES)
+    keywords = DEFAULT_TARGET_TYPES if include_keywords is None else tuple(include_keywords)
     if keywords:
         pattern = "|".join(re.escape(k) for k in keywords)
         mask = cleaned["주택유형"].astype(str).str.contains(pattern, regex=True, na=False)
